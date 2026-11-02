@@ -31,7 +31,6 @@ async def init_db():
         log.error("DATABASE_URL не задан!")
         return
     try:
-        # statement_cache_size=0 обязателен для работы с пулером Supabase (порт 6543)
         db_pool = await asyncpg.create_pool(DATABASE_URL, min_size=1, max_size=5, statement_cache_size=0)
         async with db_pool.acquire() as conn:
             await conn.execute("""
@@ -61,10 +60,8 @@ async def get_user_by_username(username: str):
     if not db_pool: return None
     try:
         async with db_pool.acquire() as conn:
-            # Ищем без учета регистра
             return await conn.fetchrow("SELECT * FROM users WHERE LOWER(username) = LOWER($1)", username)
     except Exception as e:
-        log.error(f"Ошибка поиска юзера: {e}")
         return None
 
 # ---------- Логика ----------
@@ -123,6 +120,32 @@ async def on_any_message(message: Message) -> None:
 
     # --- В ЛИЧКЕ ---
     if message.chat.type == "private":
+        # Поиск по нику в личке: /id @username
+        if text.startswith("/id") and len(text.split()) > 1:
+            username = text.split()[1].replace("@", "").strip()
+            user_row = await get_user_by_username(username)
+            
+            if user_row:
+                target_user_id = user_row['user_id']
+                name_str = user_row['full_name']
+                kb = InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="📋 Скопировать ID", copy_text=CopyTextButton(text=str(target_user_id)))]
+                ])
+                await message.answer(
+                    f"👤 ID пользователя <b>{html.escape(name_str)}</b>:\n"
+                    f"<code>{target_user_id}</code>",
+                    parse_mode="HTML",
+                    reply_markup=kb
+                )
+            else:
+                await message.answer(
+                    f"❌ Пользователь <b>@{html.escape(username)}</b> не найден в базе.\n"
+                    f"Попроси его написать любое сообщение в любой чат, где я есть.",
+                    parse_mode="HTML"
+                )
+            return
+
+        # Обычный /start или /id
         if text.startswith("/start") or text.startswith("/id"):
             kb = InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(text="📋 Скопировать мой ID", copy_text=CopyTextButton(text=str(message.from_user.id)))]
@@ -130,10 +153,11 @@ async def on_any_message(message: Message) -> None:
             await message.answer(
                 f"Привет, <b>{html.escape(message.from_user.full_name)}</b>!\n"
                 f"Твой ID: <code>{message.from_user.id}</code>\n\n"
-                "Команды в группе:\n"
-                "• <code>/id</code> — твой ID\n"
-                "• <code>/id @username</code> — поиск по базе\n"
-                "• <code>/id</code> (ответом) — ID автора сообщения",
+                "Команды:\n"
+                "• В группе <code>/id</code> — твой ID\n"
+                "• В группе <code>/id @username</code> — поиск\n"
+                "• В группе <code>/id</code> (ответом) — ID автора\n"
+                "• Здесь в ЛС: <code>/id @username</code> — поиск по базе",
                 reply_markup=kb,
                 parse_mode="HTML"
             )
@@ -155,7 +179,7 @@ async def main() -> None:
 
     await bot.delete_webhook(drop_pending_updates=True)
     log.info("Starting ID-bot polling...")
-    await dp.start_polling(bot, allowed_updates=["message"])
+    await dp.start_polling(bot, allowed_updates=["message", "callback_query"])
 
 if __name__ == "__main__":
     asyncio.run(main())
